@@ -1,6 +1,9 @@
 import torch
 import torch.nn as nn
 import math
+import pandas as pd
+import torchinfo
+import utils
 
 
 
@@ -99,9 +102,53 @@ class EncoderLayer(nn.Module):
         self.norm2 = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(dropout)
         
-    def forward(self, x, mask):
-        attn_output = self.self_attn(x, x, x, mask)
+    def forward(self, x):
+        attn_output = self.self_attn(x, x, x)
         x = self.norm1(x + self.dropout(attn_output))
         ff_output = self.feed_forward(x)
         x = self.norm2(x + self.dropout(ff_output))
         return x
+    
+    
+class TransformerEncoder(nn.Module):
+    def __init__(self, src_vocab_size, d_model, num_heads, num_layers, d_ff, max_seq_length, dropout):
+        super(TransformerEncoder, self).__init__()
+        self.encoder_embedding = nn.Embedding(src_vocab_size, d_model)
+        self.positional_encoding = PositionalEncoding(d_model, max_seq_length)
+
+        self.encoder_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(num_layers)])
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, src, tgt):
+        src_embedded = self.dropout(self.positional_encoding(self.encoder_embedding(src)))
+
+        enc_output = src_embedded
+        for enc_layer in self.encoder_layers:
+            enc_output = enc_layer(enc_output)
+
+        output = enc_output
+        return output
+    
+    
+if __name__ == "__main__":
+    src_vocab_size = 256
+    d_model = 64
+    num_heads = 4
+    num_layers = 4
+    d_ff = 128
+    dropout = 0.1
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    data = pd.read_csv("train.csv")
+    print(data.head())
+    max_seq_length_index = data['SMILES'].str.len().idxmax()
+    max_seq_length = len(data['SMILES'].iloc[max_seq_length_index])
+    print(max_seq_length)
+    
+    tokens = utils.character_tokenizer(data['SMILES'])
+    print(tokens[0])
+    
+    # pred_model = TransformerEncoder(src_vocab_size, d_model, num_heads, num_layers, d_ff, max_seq_length, dropout).to(device)
+    
+    # torchinfo.summary(pred_model, input_data=torch.tensor(data['SMILES'].to_numpy()), device=device)
