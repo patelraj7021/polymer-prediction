@@ -130,19 +130,31 @@ class TransformerEncoder(nn.Module):
 
 
 class FFPredictor(nn.Module):
-    def __init__(self, d_model, max_seq_length, d_pred, d_out):
+    def __init__(self, input_size, layer_sizes):
         super(FFPredictor, self).__init__()
-        self.fc1 = nn.Linear(d_model * max_seq_length, d_pred)
-        self.fc2 = nn.Linear(d_pred, d_out)
+        
+        # Create the layer dimensions list
+        all_layer_sizes = [input_size] + layer_sizes
+        
+        # Create the linear layers dynamically
+        self.layers = nn.ModuleList([
+            nn.Linear(all_layer_sizes[i], all_layer_sizes[i + 1])
+            for i in range(len(all_layer_sizes) - 1)
+        ])
+        
         self.relu = nn.ReLU()
         
     def forward(self, x):
-        x = self.fc1(x)
-        x = self.relu(x)
-        x = self.fc2(x)
+        # Process through all layers except the last one with ReLU activation
+        for i, layer in enumerate(self.layers):
+            x = layer(x)
+            # Apply ReLU to all layers except the last one
+            if i < len(self.layers) - 1:
+                x = self.relu(x)
+        
         return x
-    
-    
+     
+     
 class TransformerPredictor(nn.Module):
     # d_model is the dimension of the model's embedding
     # num_heads is the number of attention heads
@@ -150,11 +162,14 @@ class TransformerPredictor(nn.Module):
     # d_ff is the dimension of the feedforward network in the encoder
     # max_seq_length is the maximum sequence length
     # dropout is the dropout rate
-    # d_pred is the dimension of the feedforward network in the predictor
-    def __init__(self, d_model, num_heads, num_layers, d_ff, max_seq_length, dropout, d_pred, d_out):
+    # layer_sizes is a list of hidden layer sizes and output size for the predictor
+    def __init__(self, d_model, num_heads, num_layers, d_ff, max_seq_length, dropout, layer_sizes):
         super(TransformerPredictor, self).__init__()
         self.encoder = TransformerEncoder(d_model, num_heads, num_layers, d_ff, max_seq_length, dropout)
-        self.ff_predictor = FFPredictor(d_model, max_seq_length, d_pred, d_out)
+        
+        # Calculate input size for the FFPredictor
+        input_size = d_model * max_seq_length
+        self.ff_predictor = FFPredictor(input_size, layer_sizes)
         
     def forward(self, src):
         enc_output = self.encoder(src)  
@@ -163,32 +178,47 @@ class TransformerPredictor(nn.Module):
     
 
 def loss_function(pred, target):
+    # change this so that it matters how many values are nan in a row
+    # also need to train in normalized space but predict and evaluate MAE in original space
+    # there's a weighting function on the website
     diff = torch.abs(pred - target)
     loss = torch.nanmean(diff)
     return loss
+
+
+def train_test_split(x_tensor, y_tensor, test_size=0.2):
+    indices = torch.randperm(len(x_tensor))
+    split_idx = int(len(x_tensor) * (1 - test_size))
+    train_indices, test_indices = indices[:split_idx], indices[split_idx:]
+    return x_tensor[train_indices], y_tensor[train_indices], x_tensor[test_indices], y_tensor[test_indices]
+
     
 def train_model(model, tokens, y_true, epochs, lr):
     model.train()
     
+    train_tokens, train_y_true, validation_tokens, validation_y_true = train_test_split(tokens, y_true, test_size=0.2)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     
     for epoch in range(epochs):
         optimizer.zero_grad()
-        y_pred = model(tokens)
-        loss = loss_function(y_pred, y_true)
+        train_y_pred = model(train_tokens)
+        loss = loss_function(train_y_pred, train_y_true)
         loss.backward()
-        optimizer.step()   
-        print(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item()}")
+        optimizer.step()
+        validation_y_pred = model(validation_tokens)
+        validation_loss = loss_function(validation_y_pred, validation_y_true)
+        print(f"Epoch {epoch+1}/{epochs}, Training Loss: {loss.item()}, Validation Loss: {validation_loss.item()}")
     return
+
 
 if __name__ == "__main__":
     d_model = 64 # 43 is the number of unique characters in the SMILES string
     num_heads = 1
     num_layers = 1
-    d_ff = 64
+    d_ff = 128
     dropout = 0.1
-    d_pred = 16
-    d_out = 5
+    d_pred = 64
+    d_out = 5 # number of output features ['Tg', 'FFV', 'Tc', 'Density', 'Rg']
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -197,11 +227,12 @@ if __name__ == "__main__":
     max_seq_length = len(data['SMILES'].iloc[max_seq_length_index])
     
     y_true = torch.tensor(data[['Tg', 'FFV', 'Tc', 'Density', 'Rg']].to_numpy()).to(device)
+    y_true = utils.normalize(y_true)
     tokens = utils.character_tokenizer(data['SMILES'], d_model).to(device)
     
-    pred_model = TransformerPredictor(d_model, num_heads, num_layers, d_ff, max_seq_length, dropout, d_pred, d_out).to(device)
+    pred_model = TransformerPredictor(d_model, num_heads, num_layers, d_ff, max_seq_length, dropout, [d_pred, d_out]).to(device)
     
     torchinfo.summary(pred_model, input_data=tokens, device=device)
     
-    train_model(pred_model, tokens, y_true, epochs=100, lr=0.001)
+    train_model(pred_model, tokens, y_true, epochs=100, lr=0.00001)
     
