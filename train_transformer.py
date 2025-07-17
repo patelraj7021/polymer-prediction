@@ -111,44 +111,97 @@ class EncoderLayer(nn.Module):
     
     
 class TransformerEncoder(nn.Module):
-    def __init__(self, src_vocab_size, d_model, num_heads, num_layers, d_ff, max_seq_length, dropout):
+    def __init__(self, d_model, num_heads, num_layers, d_ff, max_seq_length, dropout):
         super(TransformerEncoder, self).__init__()
-        self.encoder_embedding = nn.Embedding(src_vocab_size, d_model)
         self.positional_encoding = PositionalEncoding(d_model, max_seq_length)
 
         self.encoder_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(num_layers)])
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, src, tgt):
-        src_embedded = self.dropout(self.positional_encoding(self.encoder_embedding(src)))
+    def forward(self, src):
+        src_embedded = self.dropout(self.positional_encoding(src))
 
         enc_output = src_embedded
         for enc_layer in self.encoder_layers:
             enc_output = enc_layer(enc_output)
 
-        output = enc_output
+        output = torch.reshape(enc_output, (enc_output.shape[0], enc_output.shape[1] * enc_output.shape[2]))
         return output
+
+
+class FFPredictor(nn.Module):
+    def __init__(self, d_model, max_seq_length, d_pred, d_out):
+        super(FFPredictor, self).__init__()
+        self.fc1 = nn.Linear(d_model * max_seq_length, d_pred)
+        self.fc2 = nn.Linear(d_pred, d_out)
+        self.relu = nn.ReLU()
+        
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.relu(x)
+        x = self.fc2(x)
+        return x
     
     
+class TransformerPredictor(nn.Module):
+    # d_model is the dimension of the model's embedding
+    # num_heads is the number of attention heads
+    # num_layers is the number of layers in the encoder
+    # d_ff is the dimension of the feedforward network in the encoder
+    # max_seq_length is the maximum sequence length
+    # dropout is the dropout rate
+    # d_pred is the dimension of the feedforward network in the predictor
+    def __init__(self, d_model, num_heads, num_layers, d_ff, max_seq_length, dropout, d_pred, d_out):
+        super(TransformerPredictor, self).__init__()
+        self.encoder = TransformerEncoder(d_model, num_heads, num_layers, d_ff, max_seq_length, dropout)
+        self.ff_predictor = FFPredictor(d_model, max_seq_length, d_pred, d_out)
+        
+    def forward(self, src):
+        enc_output = self.encoder(src)  
+        pred_output = self.ff_predictor(enc_output)
+        return pred_output
+    
+
+def loss_function(pred, target):
+    diff = torch.abs(pred - target)
+    loss = torch.nanmean(diff)
+    return loss
+    
+def train_model(model, tokens, y_true, epochs, lr):
+    model.train()
+    
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    
+    for epoch in range(epochs):
+        optimizer.zero_grad()
+        y_pred = model(tokens)
+        loss = loss_function(y_pred, y_true)
+        loss.backward()
+        optimizer.step()   
+        print(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item()}")
+    return
+
 if __name__ == "__main__":
-    src_vocab_size = 256
-    d_model = 64
-    num_heads = 4
-    num_layers = 4
-    d_ff = 128
+    d_model = 64 # 43 is the number of unique characters in the SMILES string
+    num_heads = 1
+    num_layers = 1
+    d_ff = 64
     dropout = 0.1
+    d_pred = 16
+    d_out = 5
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     data = pd.read_csv("train.csv")
-    print(data.head())
     max_seq_length_index = data['SMILES'].str.len().idxmax()
     max_seq_length = len(data['SMILES'].iloc[max_seq_length_index])
-    print(max_seq_length)
     
-    tokens = utils.character_tokenizer(data['SMILES'])
-    print(tokens[0])
+    y_true = torch.tensor(data[['Tg', 'FFV', 'Tc', 'Density', 'Rg']].to_numpy()).to(device)
+    tokens = utils.character_tokenizer(data['SMILES'], d_model).to(device)
     
-    # pred_model = TransformerEncoder(src_vocab_size, d_model, num_heads, num_layers, d_ff, max_seq_length, dropout).to(device)
+    pred_model = TransformerPredictor(d_model, num_heads, num_layers, d_ff, max_seq_length, dropout, d_pred, d_out).to(device)
     
-    # torchinfo.summary(pred_model, input_data=torch.tensor(data['SMILES'].to_numpy()), device=device)
+    torchinfo.summary(pred_model, input_data=tokens, device=device)
+    
+    train_model(pred_model, tokens, y_true, epochs=100, lr=0.001)
+    
