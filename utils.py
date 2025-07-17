@@ -26,3 +26,7 @@ def character_tokenizer(data_column, d_model):
         result.append(record_tensor)
     result_tensor = torch.stack(result, dim=0)
     return result_tensor
+
+# normalize the input tensor by the maximum value of each column
+def normalize(x, eps=1e-8):
+    return torch.div(x, torch.max(torch.nan_to_num(x), dim=0).values + eps)
