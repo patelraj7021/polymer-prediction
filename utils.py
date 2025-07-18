@@ -32,16 +32,17 @@ def character_tokenizer(data_column, d_model):
 # normalize the input tensor by the maximum value of each column
 def normalize(x, eps=1e-8):
     # this doesn't work for negative values?
-    return torch.div(x, torch.max(torch.nan_to_num(x), dim=0).values + eps)
+    max_abs_vals = torch.max(torch.abs(torch.nan_to_num(x)), dim=0).values + eps
+    return torch.div(x, max_abs_vals), max_abs_vals
 
 
 # tensor version of score function from kaggle
-def wMAE(pred, target, device):
+def wMAE(pred, target):
     # normalize across range of values for each property
     # values from train data
     # hardcoded to match with score function on kaggle
     r_i = [6.2028e+02, 5.5010e-01, 4.7750e-01, 1.0923e+00, 2.4945e+01]
-    r_i = torch.tensor(r_i).to(device)
+    r_i = torch.tensor(r_i).to("cuda")
     # count number of non-nan values for each property
     n_i = torch.sum(~torch.isnan(target), dim=0)
     inverse_sqrt_n_i = 1 / torch.sqrt(n_i)
