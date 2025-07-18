@@ -179,7 +179,13 @@ class TransformerPredictor(nn.Module):
         return pred_output
     
 
-def loss_function(pred, target):
+def MSE_loss(pred, target):
+    diff = torch.pow(pred - target, 2)
+    loss = torch.nanmean(diff)
+    return loss
+
+
+def MAE_loss(pred, target):
     diff = torch.abs(pred - target)
     loss = torch.nanmean(diff)
     return loss
@@ -192,51 +198,76 @@ def train_test_split(x_tensor, y_tensor, test_size=0.2):
     return x_tensor[train_indices], y_tensor[train_indices], x_tensor[test_indices], y_tensor[test_indices]
 
     
-def train_model(model, tokens, y_true, epochs, lr):
+def train_model(model, tokens, y_true, epochs, lr, batch_size=256):
+    # need to try with different batch sizes (lower?)
     model.train()
     
     train_tokens, train_y_true, validation_tokens, validation_y_true = train_test_split(tokens, y_true, test_size=0.2)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     
+    train_y_true, max_abs_vals = utils.normalize(train_y_true)
+    
+    loss_fn = utils.wMAE
+    
     for epoch in range(epochs):
-        optimizer.zero_grad()
-        train_y_pred = model(train_tokens)
-        loss = loss_function(train_y_pred, train_y_true)
-        loss.backward()
-        optimizer.step()
-        validation_y_pred = model(validation_tokens)
-        validation_loss = loss_function(validation_y_pred, validation_y_true)
-        print(f"Epoch {epoch+1}/{epochs}, Training Loss: {loss.item()}, Validation Loss: {validation_loss.item()}")
+        # Shuffle training data
+        indices = torch.randperm(len(train_tokens))
+        train_tokens_shuffled = train_tokens[indices]
+        train_y_true_shuffled = train_y_true[indices]
+        
+        total_loss = 0
+        num_batches = 0
+        
+        # Process in batches
+        for i in range(0, len(train_tokens), batch_size):
+            end_idx = min(i + batch_size, len(train_tokens))
+            batch_tokens = train_tokens_shuffled[i:end_idx]
+            batch_y_true = train_y_true_shuffled[i:end_idx] * max_abs_vals
+            
+            optimizer.zero_grad()
+            batch_y_pred = model(batch_tokens) * max_abs_vals
+            loss = loss_fn(batch_y_pred, batch_y_true)
+            loss.backward()
+            optimizer.step()
+            
+            total_loss += loss.item()
+            num_batches += 1
+        
+        # Calculate average training loss
+        avg_train_loss = total_loss / num_batches
+        
+        # Validation (keep as full batch for now)
+        with torch.no_grad():
+            validation_y_pred = model(validation_tokens) * max_abs_vals
+            validation_wMAE = utils.wMAE(validation_y_pred, validation_y_true)
+        
+        print(f"Epoch {epoch+1}/{epochs}, Training Loss: {avg_train_loss:.6f}, Validation wMAE: {validation_wMAE.item():.6f}")
     return
 
 
 if __name__ == "__main__":
     d_model = 64 # 43 is the number of unique characters in the SMILES string
-    num_heads = 1
-    num_layers = 1
-    d_ff = 128
+    num_heads = 2
+    num_layers = 2
+    d_ff = 64
     dropout = 0.1
     d_pred = 64
     d_out = 5 # number of output features ['Tg', 'FFV', 'Tc', 'Density', 'Rg']
+    d_pred_layers = [d_pred, d_pred, d_out]
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    data = pd.read_csv("train.csv", nrows=50)
+    # need to add the remaining data
+    data = pd.read_csv("train.csv")
     max_seq_length_index = data['SMILES'].str.len().idxmax()
     max_seq_length = len(data['SMILES'].iloc[max_seq_length_index])
     
     y_true = torch.tensor(data[['Tg', 'FFV', 'Tc', 'Density', 'Rg']].to_numpy()).to(device)
-    # y_true = utils.normalize(y_true)
     tokens = utils.character_tokenizer(data['SMILES'], d_model).to(device)
     
-    pred_model = TransformerPredictor(d_model, num_heads, num_layers, d_ff, max_seq_length, dropout, [d_pred, d_out]).to(device)
+    pred_model = TransformerPredictor(d_model, num_heads, num_layers, d_ff, max_seq_length, dropout, d_pred_layers).to(device)
     
-    # torchinfo.summary(pred_model, input_data=tokens, device=device)
+    torchinfo.summary(pred_model, input_data=tokens, device=device)
     
-    pred = pred_model(tokens)
-    pred_df = pd.DataFrame(pred.detach().cpu().numpy(), columns=['Tg', 'FFV', 'Tc', 'Density', 'Rg'])
-    print(utils.wMAE(pred, y_true, device))
-    print(utils.wMAE_kaggle(data[['Tg', 'FFV', 'Tc', 'Density', 'Rg']], pred_df, 'id'))
-    
-    # train_model(pred_model, tokens, y_true, epochs=100, lr=0.00001)
+    train_model(pred_model, tokens, y_true, epochs=100, lr=0.00001)
     
