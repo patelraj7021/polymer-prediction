@@ -94,6 +94,7 @@ class PositionalEncoding(nn.Module):
     
     
 class EncoderLayer(nn.Module):
+    # need to allow for different sizes of q, k, v
     def __init__(self, d_model, num_heads, d_ff, dropout):
         super(EncoderLayer, self).__init__()
         self.self_attn = MultiHeadAttention(d_model, num_heads)
@@ -130,6 +131,7 @@ class TransformerEncoder(nn.Module):
 
 
 class FFPredictor(nn.Module):
+    # need to try with more layers
     def __init__(self, input_size, layer_sizes):
         super(FFPredictor, self).__init__()
         
@@ -178,9 +180,6 @@ class TransformerPredictor(nn.Module):
     
 
 def loss_function(pred, target):
-    # change this so that it matters how many values are nan in a row
-    # also need to train in normalized space but predict and evaluate MAE in original space
-    # there's a weighting function on the website
     diff = torch.abs(pred - target)
     loss = torch.nanmean(diff)
     return loss
@@ -222,17 +221,22 @@ if __name__ == "__main__":
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    data = pd.read_csv("train.csv")
+    data = pd.read_csv("train.csv", nrows=50)
     max_seq_length_index = data['SMILES'].str.len().idxmax()
     max_seq_length = len(data['SMILES'].iloc[max_seq_length_index])
     
     y_true = torch.tensor(data[['Tg', 'FFV', 'Tc', 'Density', 'Rg']].to_numpy()).to(device)
-    y_true = utils.normalize(y_true)
+    # y_true = utils.normalize(y_true)
     tokens = utils.character_tokenizer(data['SMILES'], d_model).to(device)
     
     pred_model = TransformerPredictor(d_model, num_heads, num_layers, d_ff, max_seq_length, dropout, [d_pred, d_out]).to(device)
     
-    torchinfo.summary(pred_model, input_data=tokens, device=device)
+    # torchinfo.summary(pred_model, input_data=tokens, device=device)
     
-    train_model(pred_model, tokens, y_true, epochs=100, lr=0.00001)
+    pred = pred_model(tokens)
+    pred_df = pd.DataFrame(pred.detach().cpu().numpy(), columns=['Tg', 'FFV', 'Tc', 'Density', 'Rg'])
+    print(utils.wMAE(pred, y_true, device))
+    print(utils.wMAE_kaggle(data[['Tg', 'FFV', 'Tc', 'Density', 'Rg']], pred_df, 'id'))
+    
+    # train_model(pred_model, tokens, y_true, epochs=100, lr=0.00001)
     
