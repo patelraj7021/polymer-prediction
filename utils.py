@@ -134,3 +134,15 @@ def wMAE_kaggle(solution, submission, row_id_column_name):
             raise RuntimeError('No labels')
         return float(np.average(property_maes, weights=property_weights)) 
     return score(solution, submission, row_id_column_name)
+
+
+def MSE_loss(pred, target):
+    diff = torch.pow(pred - target, 2)
+    loss = torch.nanmean(diff)
+    return loss
+
+
+def MAE_loss(pred, target):
+    diff = torch.abs(pred - target)
+    loss = torch.nanmean(diff)
+    return loss
