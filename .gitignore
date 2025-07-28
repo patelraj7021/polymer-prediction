@@ -206,8 +206,15 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+<<<<<<< HEAD
 rand_tests.py
 __init__.py
 wandb/
 tokens.pt
 y_true.pt
+=======
+train.csv
+test.csv
+rand_tests.py
+__init__.py
+>>>>>>> 272b12735e0bc24196a17e385b0106c62ec2035f
