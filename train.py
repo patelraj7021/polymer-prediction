@@ -48,7 +48,7 @@ def train_model(model, train_dataloader, validation_dataloader, optimizer, loss_
         total_loss = 0
         num_batches = 0
         for batch_tokens, batch_y_true in train_dataloader:
-            # might need to train in normalized space?
+            # training in normalized space
             batch_y_true = batch_y_true * max_abs_vals  # undo normalization
             
             optimizer.zero_grad()
@@ -58,6 +58,7 @@ def train_model(model, train_dataloader, validation_dataloader, optimizer, loss_
             optimizer.step()
             
             if loss.item() < 0.00001:
+                # indicates something broke
                 broke = True
                 break
             
@@ -66,6 +67,7 @@ def train_model(model, train_dataloader, validation_dataloader, optimizer, loss_
         
         if broke:
             # to avoid wasting time on cases where the model breaks
+            # indicated by loss being 0
             break
         else:
             # Calculate average training loss
@@ -209,13 +211,13 @@ if __name__ == "__main__":
                 'values': [2, 3, 4]
             },
             'num_pred_layers': {
-                'values': [1, 2, 3]
+                'values': [2, 3]
             },
             'dropout': {
                 'value': 0.05
             },
             'lr': {
-                'values': [0.00001, 0.0001, 0.001]
+                'value': 0.00001
             },
             'batch_size': {
                 'value': 128
@@ -237,7 +239,7 @@ if __name__ == "__main__":
             }
         }
     }
-    # need to add pad masking, optimize positional encoding, try CNN arch, and add passthrough
+    # need to optimize positional encoding, try CNN arch
     # need to vary adamw hyperparameters
     sweep_id = wandb.sweep(sweep_config, entity='patelraj7021-team', project="polymer-prediction")
     wandb.agent(sweep_id, function=sweep_wrapper, count=50)

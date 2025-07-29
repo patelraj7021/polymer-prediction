@@ -99,10 +99,10 @@ class EncoderLayer(nn.Module):
         
     def forward(self, x, mask=None):
         attn_output = self.self_attn(x, x, x, mask)
-        x = self.norm1(x + self.dropout(attn_output))
-        ff_output = self.feed_forward(x)
-        x = self.norm2(x + self.dropout(ff_output))
-        return x
+        norm_attn_output = self.norm1(x + self.dropout(attn_output))
+        ff_output = self.feed_forward(norm_attn_output)
+        norm_ff_output = self.norm2(norm_attn_output + self.dropout(ff_output))
+        return norm_ff_output
     
     
 class TransformerEncoder(nn.Module):
@@ -149,10 +149,10 @@ class FFPredictor(nn.Module):
             nn.Linear(all_layer_sizes[i], all_layer_sizes[i + 1])
             for i in range(len(all_layer_sizes) - 1)
         ])
-        # self.norms = nn.ModuleList([
-        #     nn.LayerNorm(all_layer_sizes[i+1]) 
-        #     for i in range(len(all_layer_sizes) - 1)
-        # ])
+        self.norms = nn.ModuleList([
+            nn.LayerNorm(all_layer_sizes[i+1]) 
+            for i in range(len(all_layer_sizes) - 1)
+        ])
         
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(dropout)
@@ -160,12 +160,17 @@ class FFPredictor(nn.Module):
     def forward(self, x):
         # Process through all layers except the last one with ReLU activation
         for i, layer in enumerate(self.layers):
+            if i == 0:
+                residual = 0
+            else:
+                residual = x
             x = layer(x)
             # Apply ReLU to all layers except the last one
             if i < len(self.layers) - 1:
                 x = self.relu(x)
-                # x = self.dropout(x)
-                # x = self.norms[i](x)
+                x = self.dropout(x)
+                x = x + residual
+                x = self.norms[i](x)
         return x
      
      
