@@ -9,6 +9,24 @@ import nn_modules
 import wandb
 
 
+class Config:
+    def __init__(self, d_out, d_qkv, d_pred, num_heads, num_layers, num_pred_layers,
+                 dropout, lr, batch_size, epochs, optimizer, device, model_type, loss_type):
+        self.d_out = d_out
+        self.dropout = dropout
+        self.d_qkv = d_qkv
+        self.num_heads = num_heads
+        self.num_layers = num_layers
+        self.d_pred = d_pred
+        self.num_pred_layers = num_pred_layers
+        self.lr = lr
+        self.batch_size = batch_size
+        self.epochs = epochs
+        self.optimizer = optimizer
+        self.device = device
+        self.model_type = model_type
+        self.loss_type = loss_type
+
 
 def train_test_split(x_tensor, y_tensor, test_size=0.2):
     indices = torch.randperm(len(x_tensor))
@@ -22,14 +40,13 @@ def train_test_split(x_tensor, y_tensor, test_size=0.2):
     
 def train_model(model, train_dataloader, validation_dataloader, optimizer, loss_fn, config, max_abs_vals):
     # wandb.watch(model, log="all", log_freq=100, criterion=loss_fn)
-    
+    broke = False
     for epoch in range(config.epochs):
         
         # Train
         model.train()
         total_loss = 0
         num_batches = 0
-        broke = False
         for batch_tokens, batch_y_true in train_dataloader:
             # might need to train in normalized space?
             batch_y_true = batch_y_true * max_abs_vals  # undo normalization
@@ -48,35 +65,37 @@ def train_model(model, train_dataloader, validation_dataloader, optimizer, loss_
             num_batches += 1
         
         if broke:
+            # to avoid wasting time on cases where the model breaks
             break
-        
-        # Calculate average training loss
-        avg_train_loss = total_loss / num_batches
-        
-        # Validation
-        model.eval()
-        with torch.no_grad():
-            validation_losses = []
-            for val_tokens, val_y_true in validation_dataloader:
-                val_y_pred = model(val_tokens) * max_abs_vals  # undo normalization
-                val_loss = loss_fn(val_y_pred, val_y_true)
-                validation_losses.append(val_loss.item())
+        else:
+            # Calculate average training loss
+            avg_train_loss = total_loss / num_batches
             
-            avg_validation_loss = sum(validation_losses) / len(validation_losses)
-        
-        if avg_validation_loss < 0.00001 or avg_train_loss < 0.00001:
-            # this indicates something broke
-            break
-        
-        wandb.log({
-            "train_loss": avg_train_loss,
-            "validation_wMAE": avg_validation_loss
-        }, step=epoch+1)
-        
-        print(
-            f"Epoch {epoch+1}/{config.epochs}, Training Loss: {avg_train_loss:.6f}, "
-            f"Validation wMAE: {avg_validation_loss:.6f}"
-        )
+            # Validation
+            model.eval()
+            with torch.no_grad():
+                val_losses = 0
+                num_batches = 0
+                for val_tokens, val_y_true in validation_dataloader:
+                    val_y_pred = model(val_tokens) * max_abs_vals  # undo normalization
+                    val_loss = loss_fn(val_y_pred, val_y_true)
+                    val_losses += val_loss.item()
+                    num_batches += 1
+                avg_validation_loss = val_losses / num_batches
+            
+            if avg_validation_loss < 0.00001 or avg_train_loss < 0.00001:
+                # this indicates something broke
+                break
+            
+            wandb.log({
+                "train_loss": avg_train_loss,
+                "validation_wMAE": avg_validation_loss
+            }, step=epoch+1)
+            
+            print(
+                f"Epoch {epoch+1}/{config.epochs}, Training Loss: {avg_train_loss:.6f}, "
+                f"Validation wMAE: {avg_validation_loss:.6f}"
+            )
         
     return
 
@@ -113,7 +132,13 @@ def make(config):
     validation_dataloader = DataLoader(validation_dataset, batch_size=config.batch_size, shuffle=False)
     
     # Create optimizer and loss function
-    optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
+    optimizer_dict = {
+        'Adam': torch.optim.Adam,
+        'AdamW': torch.optim.AdamW,
+        'RMSprop': torch.optim.RMSprop,
+        'SGD': torch.optim.SGD
+    }
+    optimizer = optimizer_dict[config.optimizer](model.parameters(), lr=config.lr)
     loss_fn = utils.wMAE
     
     return model, train_dataloader, validation_dataloader, optimizer, loss_fn, max_abs_vals
@@ -135,6 +160,30 @@ def sweep_wrapper(config=None):
         wandb.save("model.onnx")
 
 
+def test_config():
+    # for checking memory usage
+    config = Config(
+        d_out=5,
+        d_qkv=128,
+        d_pred=256,
+        num_heads=2,
+        num_layers=4,
+        num_pred_layers=3,
+        dropout=0.05,
+        lr=0.0001,
+        batch_size=128,
+        epochs=10,
+        optimizer='AdamW',
+        device='cuda' if torch.cuda.is_available() else 'cpu',
+        model_type='transformer_predictor',
+        loss_type='wMAE'
+    )
+    model, train_dataloader, validation_dataloader, optimizer, loss_fn, max_abs_vals = make(config)
+    torchinfo.summary(model, input_data=next(iter(validation_dataloader))[0])
+    return
+    
+
+
 if __name__ == "__main__":
     
     sweep_config = {
@@ -147,32 +196,35 @@ if __name__ == "__main__":
             'd_out': {
                 'value': 5
             },
-            'dropout': {
-                'values': [0.05, 0.1, 0.2]
-            },
             'd_qkv': { # d_query = d_key = d_value
                 'values': [16, 32, 64, 128]
             },
+            'd_pred': {
+                'values': [64, 128, 256]
+            },
             'num_heads': {
-                'values': [1, 2, 3, 4]
+                'values': [1, 2]
             },
             'num_layers': {
-                'values': [1, 2, 3, 4]
-            },
-            'd_pred': {
-                'values': [16, 32, 64, 128]
+                'values': [2, 3, 4]
             },
             'num_pred_layers': {
-                'values': [1, 2, 3, 4]
+                'values': [1, 2, 3]
+            },
+            'dropout': {
+                'value': 0.05
             },
             'lr': {
-                'values': [0.00001, 0.0001, 0.001, 0.01]
+                'values': [0.00001, 0.0001, 0.001]
             },
             'batch_size': {
-                'values': [16, 32, 64, 128]
+                'value': 128
             },
             'epochs': {
-                'value': 50
+                'value': 200
+            },
+            'optimizer': {
+                'value': 'AdamW'
             },
             'device': {
                 'value': 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -185,7 +237,9 @@ if __name__ == "__main__":
             }
         }
     }
-    # need to try different optimizers
-    # need to vary adam hyperparameters
+    # need to add pad masking, optimize positional encoding, try CNN arch, and add passthrough
+    # need to vary adamw hyperparameters
     sweep_id = wandb.sweep(sweep_config, entity='patelraj7021-team', project="polymer-prediction")
-    wandb.agent(sweep_id, function=sweep_wrapper, count=10)
+    wandb.agent(sweep_id, function=sweep_wrapper, count=50)
+    
+    # test_config()

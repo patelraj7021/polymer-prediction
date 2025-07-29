@@ -24,14 +24,11 @@ class MultiHeadAttention(nn.Module):
     def scaled_dot_product_attention(self, Q, K, V, mask=None):
         # Calculate attention scores
         attn_scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_k)
-        
         # Apply mask if provided (useful for preventing attention to certain parts like padding)
         if mask is not None:
             attn_scores = attn_scores.masked_fill(mask == 0, -1e9)
-        
         # Softmax is applied to obtain attention probabilities
         attn_probs = torch.softmax(attn_scores, dim=-1)
-        
         # Multiply by values to obtain the final output
         output = torch.matmul(attn_probs, V)
         return output
@@ -47,13 +44,11 @@ class MultiHeadAttention(nn.Module):
         return x.transpose(1, 2).contiguous().view(batch_size, seq_length, d*self.num_heads)
     
     def forward(self, Q, K, V, mask=None):
+        # Q = K = V        
         # Apply linear transformations and split heads
-        Q = self.W_q(Q)
-        K = self.W_k(K)
-        V = self.W_v(V)
-        Q = self.split_heads(Q)
-        K = self.split_heads(K)
-        V = self.split_heads(V)
+        Q = self.split_heads(self.W_q(Q))
+        K = self.split_heads(self.W_k(K))
+        V = self.split_heads(self.W_v(V))
         
         # Perform scaled dot-product attention
         attn_output = self.scaled_dot_product_attention(Q, K, V, mask)
@@ -102,8 +97,8 @@ class EncoderLayer(nn.Module):
         self.norm2 = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(dropout)
         
-    def forward(self, x):
-        attn_output = self.self_attn(x, x, x)
+    def forward(self, x, mask=None):
+        attn_output = self.self_attn(x, x, x, mask)
         x = self.norm1(x + self.dropout(attn_output))
         ff_output = self.feed_forward(x)
         x = self.norm2(x + self.dropout(ff_output))
@@ -122,10 +117,20 @@ class TransformerEncoder(nn.Module):
         ])
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, src):
-        enc_output = self.dropout(self.positional_encoding(src))
+    def forward(self, x):
+        # kinda hacky?
+        # need to ask all pad tokens
+        mask = x.sum(dim=-1) < 1e-5
+        mask = mask.unsqueeze(1)
+        mask = mask.expand(x.shape[0], x.shape[-2], x.shape[-2])
+        mask_T = torch.transpose(mask, -1, -2)
+        mask = torch.logical_or(mask, mask_T)
+        # better to have as 0 and 1s for ONNX?
+        mask = torch.where(mask, torch.tensor(0), torch.tensor(1))
+        mask = mask.unsqueeze(1)
+        enc_output = self.dropout(self.positional_encoding(x))
         for enc_layer in self.encoder_layers:
-            enc_output = enc_layer(enc_output)
+            enc_output = enc_layer(enc_output, mask)
 
         return enc_output
 
@@ -183,8 +188,8 @@ class TransformerPredictor(nn.Module):
         input_size = d_model * max_seq_length
         self.ff_predictor = FFPredictor(input_size, pred_layer_sizes, dropout)
         
-    def forward(self, src):
-        enc_output = self.encoder(src)
+    def forward(self, x):
+        enc_output = self.encoder(x)
         # reshape to flatten for ff predictor
         flattened_output = torch.reshape(
             enc_output, 

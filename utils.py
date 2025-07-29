@@ -2,15 +2,13 @@ import torch
 import numpy as np
 import pandas as pd
 
+
+
 def character_tokenizer(data_column):
     max_seq_length_index = data_column.str.len().idxmax()
     max_seq_length = len(data_column.iloc[max_seq_length_index]) + 2 # +2 for bos and eos
     chars = set()
     # get all unique characters
-<<<<<<< HEAD
-=======
-    # should hord code this eventually
->>>>>>> 272b12735e0bc24196a17e385b0106c62ec2035f
     for row in data_column:
         chars = chars.union(set(row))
     i = 0
@@ -50,20 +48,12 @@ def character_tokenizer(data_column):
             record_tensor = torch.cat([record_tensor, pad_tensor], dim=0)
         result.append(record_tensor)
     result_tensor = torch.stack(result, dim=0)
-<<<<<<< HEAD
     return result_tensor
+
 
 # normalize the input tensor by the maximum value of each column
 def normalize(x, eps=1e-8):
     max_abs_vals = torch.max(torch.nan_to_num(torch.abs(x)), dim=0).values + eps
-=======
-    return result_tensor, len(char_index_map), max_seq_length
-
-# normalize the input tensor by the maximum value of each column
-def normalize(x, eps=1e-8):
-    # this doesn't work for negative values?
-    max_abs_vals = torch.max(torch.abs(torch.nan_to_num(x)), dim=0).values + eps
->>>>>>> 272b12735e0bc24196a17e385b0106c62ec2035f
     return torch.div(x, max_abs_vals), max_abs_vals
 
 
@@ -147,21 +137,13 @@ def wMAE_kaggle(solution, submission, row_id_column_name):
     return score(solution, submission, row_id_column_name)
 
 
-<<<<<<< HEAD
 def MSE(pred, target):
-=======
-def MSE_loss(pred, target):
->>>>>>> 272b12735e0bc24196a17e385b0106c62ec2035f
     diff = torch.pow(pred - target, 2)
     loss = torch.nanmean(diff)
     return loss
 
 
-<<<<<<< HEAD
 def MAE(pred, target):
-=======
-def MAE_loss(pred, target):
->>>>>>> 272b12735e0bc24196a17e385b0106c62ec2035f
     diff = torch.abs(pred - target)
     loss = torch.nanmean(diff)
     return loss
