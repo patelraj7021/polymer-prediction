@@ -48,17 +48,37 @@ def train_model(model, train_dataloader, validation_dataloader, optimizer, loss_
         total_loss = 0
         num_batches = 0
         for batch_tokens, batch_y_true in train_dataloader:
-            # training in normalized space
+            # since we're training in normalized space
             batch_y_true = batch_y_true * max_abs_vals  # undo normalization
+            
+            nan_mask = torch.isnan(batch_y_true)
             
             optimizer.zero_grad()
             batch_y_pred = model(batch_tokens) * max_abs_vals  # undo normalization
+            # helps avoid numerical instability when calculating gradients
+            # doesn't affect loss calculation because nan counts
+            # are based on batch_y_true
+            batch_y_pred[nan_mask] = 0
             loss = loss_fn(batch_y_pred, batch_y_true)
             loss.backward()
             optimizer.step()
             
+            # if any(torch.sum(~torch.isnan(batch_y_true), dim=0) == 0):
+            #     print(num_batches)
+            #     print(epoch)
+            #     print('flag')
+            #     print(loss.item())
+            #     print(batch_y_true)
+            #     print(batch_y_pred)
+            
             if loss.item() < 0.00001:
                 # indicates something broke
+                print(num_batches)
+                print(epoch)
+                print(torch.sum(~torch.isnan(batch_y_true), dim=0))
+                print(loss.item())
+                print(batch_y_true)
+                print(batch_y_pred)
                 broke = True
                 break
             
@@ -83,6 +103,7 @@ def train_model(model, train_dataloader, validation_dataloader, optimizer, loss_
                     val_loss = loss_fn(val_y_pred, val_y_true)
                     val_losses += val_loss.item()
                     num_batches += 1
+
                 avg_validation_loss = val_losses / num_batches
             
             if avg_validation_loss < 0.00001 or avg_train_loss < 0.00001:
@@ -93,6 +114,8 @@ def train_model(model, train_dataloader, validation_dataloader, optimizer, loss_
                 "train_loss": avg_train_loss,
                 "validation_wMAE": avg_validation_loss
             }, step=epoch+1)
+            
+            
             
             print(
                 f"Epoch {epoch+1}/{config.epochs}, Training Loss: {avg_train_loss:.6f}, "
@@ -147,6 +170,7 @@ def make(config):
 
 
 def sweep_wrapper(config=None):
+    
     with wandb.init(job_type="sweep-training", config=config) as run:
         
         config = wandb.config
@@ -168,12 +192,12 @@ def test_config():
         d_out=5,
         d_qkv=128,
         d_pred=256,
-        num_heads=2,
+        num_heads=4,
         num_layers=4,
-        num_pred_layers=3,
+        num_pred_layers=4,
         dropout=0.05,
         lr=0.0001,
-        batch_size=128,
+        batch_size=256,
         epochs=10,
         optimizer='AdamW',
         device='cuda' if torch.cuda.is_available() else 'cpu',
@@ -199,19 +223,19 @@ if __name__ == "__main__":
                 'value': 5
             },
             'd_qkv': { # d_query = d_key = d_value
-                'values': [16, 32, 64, 128]
+                'value': 64
             },
             'd_pred': {
-                'values': [64, 128, 256]
+                'value': 64
             },
             'num_heads': {
-                'values': [1, 2]
+                'value': 2
             },
             'num_layers': {
-                'values': [2, 3, 4]
+                'value': 2
             },
             'num_pred_layers': {
-                'values': [2, 3]
+                'value': 2
             },
             'dropout': {
                 'value': 0.05
@@ -220,7 +244,7 @@ if __name__ == "__main__":
                 'value': 0.00001
             },
             'batch_size': {
-                'value': 128
+                'value': 32
             },
             'epochs': {
                 'value': 200
@@ -241,7 +265,8 @@ if __name__ == "__main__":
     }
     # need to optimize positional encoding, try CNN arch
     # need to vary adamw hyperparameters
-    sweep_id = wandb.sweep(sweep_config, entity='patelraj7021-team', project="polymer-prediction")
-    wandb.agent(sweep_id, function=sweep_wrapper, count=50)
+    # sweep_id = wandb.sweep(sweep_config, entity='patelraj7021-team', project="polymer-prediction")
+    # wandb.agent(sweep_id, function=sweep_wrapper, count=50)
     
-    # test_config()
+    
+    test_config()

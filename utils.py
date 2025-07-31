@@ -66,7 +66,9 @@ def wMAE(pred, target):
     r_i = torch.tensor(r_i).to("cuda")
     # count number of non-nan values for each property
     n_i = torch.sum(~torch.isnan(target), dim=0)
-    inverse_sqrt_n_i = 1 / torch.sqrt(n_i)
+    # if there are no non-nan values for a property, set the weight to 0
+    # this happens often when batch size is small
+    inverse_sqrt_n_i = torch.nan_to_num(1 / torch.sqrt(n_i), nan=0, posinf=0, neginf=0)
     property_weights = torch.div(inverse_sqrt_n_i, torch.sum(inverse_sqrt_n_i)) * inverse_sqrt_n_i.shape[0]
     diff = torch.abs(pred - target)
     scaled_diff = torch.div(diff, r_i)
@@ -138,12 +140,12 @@ def wMAE_kaggle(solution, submission, row_id_column_name):
 
 
 def MSE(pred, target):
-    diff = torch.pow(pred - target, 2)
+    diff = torch.pow(torch.nan_to_num(pred) - torch.nan_to_num(target), 2)
     loss = torch.nanmean(diff)
     return loss
 
 
 def MAE(pred, target):
-    diff = torch.abs(pred - target)
+    diff = torch.abs(torch.nan_to_num(pred) - torch.nan_to_num(target))
     loss = torch.nanmean(diff)
     return loss
