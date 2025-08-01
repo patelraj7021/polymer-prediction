@@ -2,6 +2,7 @@ import wandb
 import pandas as pd
 import torch
 import utils
+import pickle
 
 
 
@@ -47,14 +48,16 @@ data = merge_with_row_duplication([main_data, dataset_1, dataset_3, dataset_4])
 y_true = torch.tensor(data[['Tg', 'FFV', 'Tc', 'Density', 'Rg']].to_numpy())
 torch.save(y_true, "y_true.pt")
 
-tokens = utils.character_tokenizer(data['SMILES'])
+tokens, char_index_map = utils.character_tokenizer(data['SMILES'])
 torch.save(tokens, "tokens.pt")
+with open("char_index_map.pkl", "wb") as f:
+    pickle.dump(char_index_map, f)
 
 run = wandb.init(entity='patelraj7021-team', project="polymer-prediction", job_type="upload-data")
 
 artifact = wandb.Artifact("polymer-data", type="dataset")
 artifact.add_file("y_true.pt")
 artifact.add_file("tokens.pt")
-
+artifact.add_file("char_index_map.pkl")
 run.log_artifact(artifact)
 run.finish()

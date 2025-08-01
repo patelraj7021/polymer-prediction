@@ -169,7 +169,7 @@ class FFPredictor(nn.Module):
             if i < len(self.layers) - 1:
                 x = self.relu(x)
                 # x = self.dropout(x)
-                x = x + residual
+                # x = x + residual
                 x = self.norms[i](x)
         return x
      

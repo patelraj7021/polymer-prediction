@@ -38,9 +38,11 @@ def train_test_split(x_tensor, y_tensor, test_size=0.2):
     )
 
     
-def train_model(model, train_dataloader, validation_dataloader, optimizer, loss_fn, config, max_abs_vals):
+def train_model(model, train_dataloader, validation_dataloader, optimizer, loss_fn, config, max_abs_vals,
+                track_best=False):
     # wandb.watch(model, log="all", log_freq=100, criterion=loss_fn)
     broke = False
+    last_best_loss = float('inf')
     for epoch in range(config.epochs):
         
         # Train
@@ -63,22 +65,8 @@ def train_model(model, train_dataloader, validation_dataloader, optimizer, loss_
             loss.backward()
             optimizer.step()
             
-            # if any(torch.sum(~torch.isnan(batch_y_true), dim=0) == 0):
-            #     print(num_batches)
-            #     print(epoch)
-            #     print('flag')
-            #     print(loss.item())
-            #     print(batch_y_true)
-            #     print(batch_y_pred)
-            
             if loss.item() < 0.00001:
                 # indicates something broke
-                print(num_batches)
-                print(epoch)
-                print(torch.sum(~torch.isnan(batch_y_true), dim=0))
-                print(loss.item())
-                print(batch_y_true)
-                print(batch_y_pred)
                 broke = True
                 break
             
@@ -110,6 +98,11 @@ def train_model(model, train_dataloader, validation_dataloader, optimizer, loss_
                 # this indicates something broke
                 break
             
+            if track_best:
+                if avg_validation_loss < last_best_loss:
+                    last_best_loss = avg_validation_loss
+                    torch.save(model.state_dict(), "best_model.pt")
+            
             wandb.log({
                 "train_loss": avg_train_loss,
                 "validation_wMAE": avg_validation_loss
@@ -121,8 +114,9 @@ def train_model(model, train_dataloader, validation_dataloader, optimizer, loss_
                 f"Epoch {epoch+1}/{config.epochs}, Training Loss: {avg_train_loss:.6f}, "
                 f"Validation wMAE: {avg_validation_loss:.6f}"
             )
-        
-    return
+    if track_best:
+        model.load_state_dict(torch.load("best_model.pt"))
+    return model
 
 
 def make(config):
@@ -190,14 +184,14 @@ def test_config():
     # for checking memory usage
     config = Config(
         d_out=5,
-        d_qkv=128,
+        d_qkv=256,
         d_pred=256,
-        num_heads=4,
-        num_layers=4,
-        num_pred_layers=4,
+        num_heads=8,
+        num_layers=8,
+        num_pred_layers=8,
         dropout=0.05,
         lr=0.0001,
-        batch_size=256,
+        batch_size=128,
         epochs=10,
         optimizer='AdamW',
         device='cuda' if torch.cuda.is_available() else 'cpu',
@@ -206,8 +200,49 @@ def test_config():
     )
     model, train_dataloader, validation_dataloader, optimizer, loss_fn, max_abs_vals = make(config)
     torchinfo.summary(model, input_data=next(iter(validation_dataloader))[0])
+    train_model(model, train_dataloader, validation_dataloader, 
+                optimizer, loss_fn, config, max_abs_vals)
     return
     
+
+def final_train(test_loc):
+    config = Config(
+        d_out=5,
+        d_qkv=256,
+        d_pred=256,
+        num_heads=8,
+        num_layers=8,
+        num_pred_layers=8,
+        dropout=0.05,
+        lr=1e-4,
+        batch_size=256,
+        epochs=10,
+        optimizer='AdamW',
+        device='cuda' if torch.cuda.is_available() else 'cpu',
+        model_type='transformer_predictor',
+        loss_type='wMAE'
+    )
+    model, train_dataloader, validation_dataloader, optimizer, loss_fn, max_abs_vals = make(config)
+    best_model = train_model(model, train_dataloader, validation_dataloader, 
+                             optimizer, loss_fn, config, max_abs_vals, track_best=True)
+    test_df = pd.read_csv(test_loc)
+    with open("char_index_map.pkl", "rb") as f:
+        char_index_map = pickle.load(f)
+    max_seq_length = next(iter(train_dataloader))[0].shape[-2]
+    test_tokens = utils.tokens_from_charmap(test_df['SMILES'], char_index_map, max_seq_length)
+    test_tokens = test_tokens.to(config.device)
+    test_predictions = best_model(test_tokens)
+    test_predictions = test_predictions * max_abs_vals
+    test_predictions = test_predictions.cpu().detach().numpy()
+    test_df[['Tg', 'FFV', 'Tc', 'Density', 'Rg']] = test_predictions
+    test_df.to_csv('submission.csv', index=False)
+    # Delete model and optimizer
+    del model
+    del optimizer
+    
+    # Clear cache
+    torch.cuda.empty_cache()
+    return
 
 
 if __name__ == "__main__":
@@ -223,31 +258,31 @@ if __name__ == "__main__":
                 'value': 5
             },
             'd_qkv': { # d_query = d_key = d_value
-                'value': 64
+                'values': [32, 64, 128, 256]
             },
             'd_pred': {
-                'value': 64
+                'values': [32, 64, 128, 256]
             },
             'num_heads': {
-                'value': 2
+                'values': [2, 4, 8]
             },
             'num_layers': {
-                'value': 2
+                'values': [2, 4, 8]
             },
             'num_pred_layers': {
-                'value': 2
+                'values': [2, 4, 8]
             },
             'dropout': {
                 'value': 0.05
             },
             'lr': {
-                'value': 0.00001
+                'value': 1e-4
             },
-            'batch_size': {
-                'value': 32
+            'batch_size': { # max at 256 due to memory constraints
+                'values': [32, 64, 128]
             },
             'epochs': {
-                'value': 200
+                'value': 50
             },
             'optimizer': {
                 'value': 'AdamW'
@@ -263,10 +298,10 @@ if __name__ == "__main__":
             }
         }
     }
-    # need to optimize positional encoding, try CNN arch
+    # need to optimize positional encoding (try relative), try CNN arch
     # need to vary adamw hyperparameters
-    # sweep_id = wandb.sweep(sweep_config, entity='patelraj7021-team', project="polymer-prediction")
-    # wandb.agent(sweep_id, function=sweep_wrapper, count=50)
+    sweep_id = wandb.sweep(sweep_config, entity='patelraj7021-team', project="polymer-prediction")
+    wandb.agent(sweep_id, function=sweep_wrapper, count=50)
     
     
-    test_config()
+    # test_config()

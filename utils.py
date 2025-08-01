@@ -7,6 +7,12 @@ import pandas as pd
 def character_tokenizer(data_column):
     max_seq_length_index = data_column.str.len().idxmax()
     max_seq_length = len(data_column.iloc[max_seq_length_index]) + 2 # +2 for bos and eos
+    char_index_map = charmap_from_text(data_column)
+    result_tensor = tokens_from_charmap(data_column, char_index_map, max_seq_length)
+    return result_tensor, char_index_map
+
+
+def charmap_from_text(data_column):
     chars = set()
     # get all unique characters
     for row in data_column:
@@ -21,6 +27,10 @@ def character_tokenizer(data_column):
     char_index_map['<bos>'] = i + 1
     char_index_map['<eos>'] = i + 2
     char_index_map['<unk>'] = i + 3
+    return char_index_map
+
+
+def tokens_from_charmap(data_column, char_index_map, max_seq_length):
     result = []
     for row in data_column:
         # a record here is a SMILES sequence
