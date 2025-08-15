@@ -160,17 +160,15 @@ class FFPredictor(nn.Module):
     def forward(self, x):
         # Process through all layers except the last one with ReLU activation
         for i, layer in enumerate(self.layers):
-            if i == 0:
-                residual = 0
-            else:
-                residual = x
+            residual = 0
             x = layer(x)
             # Apply ReLU to all layers except the last one
             if i < len(self.layers) - 1:
                 x = self.relu(x)
-                # x = self.dropout(x)
-                # x = x + residual
+                x = self.dropout(x)
+                x = x + residual
                 x = self.norms[i](x)
+                residual = x
         return x
      
      
@@ -188,6 +186,16 @@ class TransformerPredictor(nn.Module):
         self.encoder = TransformerEncoder(d_model, d_query, d_key, d_value, d_ff, 
                                           num_heads, num_layers, max_seq_length, 
                                           dropout)
+        self.d_model = d_model
+        self.d_query = d_query
+        self.d_key = d_key
+        self.d_value = d_value
+        self.d_ff = d_ff
+        self.num_heads = num_heads
+        self.num_layers = num_layers
+        self.max_seq_length = max_seq_length
+        self.dropout = dropout
+        self.pred_layer_sizes = pred_layer_sizes
         
         # Calculate input size for the FFPredictor
         input_size = d_model * max_seq_length

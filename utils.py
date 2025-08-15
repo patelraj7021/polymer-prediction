@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 import pandas as pd
-
+from rdkit import Chem
 
 
 def character_tokenizer(data_column):
@@ -24,9 +24,11 @@ def charmap_from_text(data_column):
         char_index_map[char] = i
         i += 1
     # add indices for bos, eos, unk
-    char_index_map['<bos>'] = i + 1
-    char_index_map['<eos>'] = i + 2
-    char_index_map['<unk>'] = i + 3
+    char_index_map['<bos>'] = i 
+    i += 1
+    char_index_map['<eos>'] = i
+    i += 1
+    char_index_map['<unk>'] = i
     return char_index_map
 
 
@@ -68,14 +70,14 @@ def normalize(x, eps=1e-8):
 
 
 # tensor version of score function from kaggle
-def wMAE(pred, target):
+def wMAE(pred, target, n_i):
     # normalize across range of values for each property
     # values from train data
     # hardcoded to match with score function on kaggle
     r_i = [6.2028e+02, 5.5010e-01, 4.7750e-01, 1.0923e+00, 2.4945e+01]
-    r_i = torch.tensor(r_i).to("cuda")
+    r_i = torch.tensor(r_i).to(pred.device)
     # count number of non-nan values for each property
-    n_i = torch.sum(~torch.isnan(target), dim=0)
+    # n_i = torch.sum(~torch.isnan(target), dim=0)
     # if there are no non-nan values for a property, set the weight to 0
     # this happens often when batch size is small
     inverse_sqrt_n_i = torch.nan_to_num(1 / torch.sqrt(n_i), nan=0, posinf=0, neginf=0)
@@ -159,3 +161,29 @@ def MAE(pred, target):
     diff = torch.abs(torch.nan_to_num(pred) - torch.nan_to_num(target))
     loss = torch.nanmean(diff)
     return loss
+
+
+def make_smile_canonical(smile): # To avoid duplicates, for example: canonical '*C=C(*)C' == '*C(=C*)C'
+    """Completely clean and validate SMILES, removing all problematic patterns"""
+    if not isinstance(smile, str) or len(smile) == 0:
+        return None
+    # List of all problematic patterns we've seen
+    bad_patterns = [
+        '[R]', '[R1]', '[R2]', '[R3]', '[R4]', '[R5]',
+        "[R']", '[R"]', 'R1', 'R2', 'R3', 'R4', 'R5',
+        # Additional patterns that cause issues
+        '([R])', '([R1])', '([R2])',
+    ]
+    # Check for any bad patterns
+    for pattern in bad_patterns:
+        if pattern in smile:
+            return np.nan
+    # Additional check: if it contains ] followed by [ without valid atoms, likely polymer notation
+    if '][' in smile and any(x in smile for x in ['[R', 'R]']):
+        return np.nan
+    try:
+        mol = Chem.MolFromSmiles(smile)
+        canon_smile = Chem.MolToSmiles(mol, canonical=True)
+        return canon_smile
+    except:
+        return np.nan

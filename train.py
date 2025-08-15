@@ -7,6 +7,7 @@ import utils
 from torch.utils.data import TensorDataset, DataLoader
 import nn_modules
 import wandb
+import pickle
 
 
 class Config:
@@ -38,7 +39,7 @@ def train_test_split(x_tensor, y_tensor, test_size=0.2):
     )
 
     
-def train_model(model, train_dataloader, validation_dataloader, optimizer, loss_fn, config, max_abs_vals,
+def train_model(model, train_dataloader, validation_dataloader, optimizer, loss_fn, config, max_abs_vals, n_i,
                 track_best=False):
     # wandb.watch(model, log="all", log_freq=100, criterion=loss_fn)
     broke = False
@@ -61,7 +62,7 @@ def train_model(model, train_dataloader, validation_dataloader, optimizer, loss_
             # doesn't affect loss calculation because nan counts
             # are based on batch_y_true
             batch_y_pred[nan_mask] = 0
-            loss = loss_fn(batch_y_pred, batch_y_true)
+            loss = loss_fn(batch_y_pred, batch_y_true, n_i)
             loss.backward()
             optimizer.step()
             
@@ -88,7 +89,7 @@ def train_model(model, train_dataloader, validation_dataloader, optimizer, loss_
                 num_batches = 0
                 for val_tokens, val_y_true in validation_dataloader:
                     val_y_pred = model(val_tokens) * max_abs_vals  # undo normalization
-                    val_loss = loss_fn(val_y_pred, val_y_true)
+                    val_loss = loss_fn(val_y_pred, val_y_true, n_i)
                     val_losses += val_loss.item()
                     num_batches += 1
 
@@ -128,6 +129,8 @@ def make(config):
     max_seq_length = tokens.shape[-2]
     d_ff = 4 * d_model  # taken from original paper
     
+    n_i = torch.sum(~torch.isnan(y_true), dim=0)
+    
     # Create model
     pred_layer_sizes = [config.d_pred] * config.num_pred_layers + [config.d_out]
     model = nn_modules.TransformerPredictor(
@@ -160,7 +163,7 @@ def make(config):
     optimizer = optimizer_dict[config.optimizer](model.parameters(), lr=config.lr)
     loss_fn = utils.wMAE
     
-    return model, train_dataloader, validation_dataloader, optimizer, loss_fn, max_abs_vals
+    return model, train_dataloader, validation_dataloader, optimizer, loss_fn, max_abs_vals, n_i
 
 
 def sweep_wrapper(config=None):
@@ -170,11 +173,11 @@ def sweep_wrapper(config=None):
         config = wandb.config
         
         # Create model and training components
-        model, train_dataloader, validation_dataloader, optimizer, loss_fn, max_abs_vals = make(config)
+        model, train_dataloader, validation_dataloader, optimizer, loss_fn, max_abs_vals, n_i = make(config)
         
         # Train the model
         train_model(model, train_dataloader, validation_dataloader, 
-                    optimizer, loss_fn, config, max_abs_vals)
+                    optimizer, loss_fn, config, max_abs_vals, n_i)
         
         torch.onnx.export(model, next(iter(validation_dataloader))[0], "model.onnx")
         wandb.save("model.onnx")
@@ -205,7 +208,51 @@ def test_config():
     return
     
 
-def final_train(test_loc):
+def final_train(config):
+    model, train_dataloader, validation_dataloader, optimizer, loss_fn, max_abs_vals = make(config)
+    best_model = train_model(model, train_dataloader, validation_dataloader, 
+                             optimizer, loss_fn, config, max_abs_vals, track_best=True)
+    
+    return best_model, max_abs_vals
+
+
+def pred_test(model, max_abs_vals, test_loc, config):
+    test_df = pd.read_csv(test_loc)
+    
+    test_df['SMILES'] = test_df['SMILES'].apply(lambda s: utils.make_smile_canonical(s))
+    
+    # Check if SMILES length is greater than max_seq_length
+    # If so, truncate the SMILES string
+    max_allowed_length = model.max_seq_length - 2
+    test_df['SMILES'] = test_df['SMILES'].apply(
+        lambda x: x[:max_allowed_length] if len(x) > max_allowed_length else x)
+    
+    with open("char_index_map.pkl", "rb") as f:
+        char_index_map = pickle.load(f)
+    test_tokens = utils.tokens_from_charmap(test_df['SMILES'], char_index_map, model.max_seq_length)
+    test_tokens = test_tokens.to(config.device)
+    
+    # Create dataset and dataloader for batch processing
+    test_dataset = TensorDataset(test_tokens)
+    test_dataloader = DataLoader(test_dataset, batch_size=config.batch_size, shuffle=False)
+    
+    # Collect predictions from all batches
+    all_predictions = []
+    model.eval()
+    with torch.no_grad():
+        for batch_tokens in test_dataloader:
+            batch_tokens = batch_tokens[0]  # TensorDataset returns a tuple
+            batch_predictions = model(batch_tokens)
+            batch_predictions = batch_predictions * max_abs_vals
+            all_predictions.append(batch_predictions.cpu())
+    
+    # Concatenate all batch predictions
+    test_predictions = torch.cat(all_predictions, dim=0).detach().numpy()
+    test_df[['Tg', 'FFV', 'Tc', 'Density', 'Rg']] = test_predictions
+    return test_df
+
+
+def kaggle_submission():
     config = Config(
         d_out=5,
         d_qkv=256,
@@ -214,9 +261,9 @@ def final_train(test_loc):
         num_layers=8,
         num_pred_layers=8,
         dropout=0.05,
-        lr=1e-4,
+        lr=0.0001,
         batch_size=256,
-        epochs=10,
+        epochs=1,
         optimizer='AdamW',
         device='cuda' if torch.cuda.is_available() else 'cpu',
         model_type='transformer_predictor',
@@ -225,23 +272,9 @@ def final_train(test_loc):
     model, train_dataloader, validation_dataloader, optimizer, loss_fn, max_abs_vals = make(config)
     best_model = train_model(model, train_dataloader, validation_dataloader, 
                              optimizer, loss_fn, config, max_abs_vals, track_best=True)
-    test_df = pd.read_csv(test_loc)
-    with open("char_index_map.pkl", "rb") as f:
-        char_index_map = pickle.load(f)
-    max_seq_length = next(iter(train_dataloader))[0].shape[-2]
-    test_tokens = utils.tokens_from_charmap(test_df['SMILES'], char_index_map, max_seq_length)
-    test_tokens = test_tokens.to(config.device)
-    test_predictions = best_model(test_tokens)
-    test_predictions = test_predictions * max_abs_vals
-    test_predictions = test_predictions.cpu().detach().numpy()
-    test_df[['Tg', 'FFV', 'Tc', 'Density', 'Rg']] = test_predictions
-    test_df.to_csv('submission.csv', index=False)
-    # Delete model and optimizer
-    del model
-    del optimizer
-    
-    # Clear cache
-    torch.cuda.empty_cache()
+    test_loc = '../input/neurips-open-polymer-prediction-2025/test.csv'
+    test_df = pred_test(best_model, max_abs_vals, test_loc, config)
+    test_df.to_csv("submission.csv", index=False)
     return
 
 
@@ -298,8 +331,11 @@ if __name__ == "__main__":
             }
         }
     }
-    # need to optimize positional encoding (try relative), try CNN arch
+    # need to optimize positional encoding (try relative - https://arxiv.org/pdf/2312.17044v4)
+    # try CNN arch
     # need to vary adamw hyperparameters
+    # need to fix wMAE? technically it's supposed to use 
+    # the full training/validation set for calculating n_i, property weights
     sweep_id = wandb.sweep(sweep_config, entity='patelraj7021-team', project="polymer-prediction")
     wandb.agent(sweep_id, function=sweep_wrapper, count=50)
     

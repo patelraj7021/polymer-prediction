@@ -48,6 +48,7 @@ data = merge_with_row_duplication([main_data, dataset_1, dataset_3, dataset_4])
 y_true = torch.tensor(data[['Tg', 'FFV', 'Tc', 'Density', 'Rg']].to_numpy())
 torch.save(y_true, "y_true.pt")
 
+data['SMILES'] = data['SMILES'].apply(lambda s: utils.make_smile_canonical(s))
 tokens, char_index_map = utils.character_tokenizer(data['SMILES'])
 torch.save(tokens, "tokens.pt")
 with open("char_index_map.pkl", "wb") as f:
